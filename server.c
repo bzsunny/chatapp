@@ -12,13 +12,14 @@
 #define MAX 5
 
 struct table{
+	sem_t sem;
 	int sock_fd;
 	unsigned long int c_ip;
 	unsigned short int c_port;
 	char status[10];
 };
 
-sem_t sem1,sem2;
+sem_t cur_sem,sem2;
 
 typedef void*(funptr)(void*);
 struct table socket_table[SIZE];
@@ -30,10 +31,11 @@ void* handleThread(void*);
 void client_accept(int*);
 void table_update(unsigned long int, unsigned short int,int fd);
 int table_check(unsigned long int, unsigned short int,int fd);
+void semaphore_init(void);
 
  int main(int argc, char const *argv[])
  {
- 	sem_init(&sem1,0,1);
+ 	sem_init(&cur_sem,0,1);
  	sem_init(&sem2,0,0);
  	int server_sockfd,client_sockfd;
  	char buffer[SIZE];
@@ -46,6 +48,7 @@ int table_check(unsigned long int, unsigned short int,int fd);
  	server_addr.sin_addr.s_addr= htonl(INADDR_ANY);
  	server_addr.sin_port = htons(9332);
  	server_len = sizeof(server_addr);
+ 	semaphore_init();
  	bind(server_sockfd,(struct sockaddr*)&server_addr,server_len);
  	listen(server_sockfd, 5);
  	printf("server waiting\n");
@@ -61,16 +64,34 @@ int table_check(unsigned long int, unsigned short int,int fd);
  	return 0;
  }
 
+
+void semaphore_init(){
+	int i;
+	for(i=0;i<SIZE;i++)
+	{
+		sem_init(&socket_table[i].sem,0,1);
+	}
+	printf("done with init of semaphores\n");
+}
+
 void table_update( unsigned long int ip, unsigned short int port ,int client_sockfd){
 			printf("Updating table\n");
-			sem_wait(&sem1);
+			
 			if(table_check(ip,port,client_sockfd)==0){
+			sem_wait(&cur_sem);
+			sem_wait(&socket_table[cur_pos].sem);
 			socket_table[cur_pos].sock_fd = client_sockfd;
 			socket_table[cur_pos].c_ip = ip;
 			socket_table[cur_pos].c_port = port;
 			strcpy(socket_table[cur_pos].status,"open");
+			sem_post(&socket_table[cur_pos].sem);
 			cur_pos++;
-			sem_post(&sem1);
+			sem_post(&cur_sem);
+			printf("table updated\n");
+		}
+		else
+		{
+			printf("possible dublication in table\n");
 		}
 }
 
@@ -78,15 +99,16 @@ void* handleThread(void* sock_fd){
 		int fd = (int*)sock_fd;
 		char ch[SIZE];
 		int i=0;
+		printf(" In thread\n");
 		while(read(fd,ch,SIZE)>0){	
-			printf(" In thread\n");
+			printf("read from: %d thread\n",fd);
 			for(i=0;i<=cur_pos;i++)
 				{
-						sem_wait(&sem1);
-						if(strcmp(socket_table[i].status,"open")==0){
-							write(socket_table[i].sock_fd,ch,strlen(ch)+1);
+						sem_wait(&socket_table[i].sem);
+						if(strcmp(socket_table[i].status,"open")==0 ){
+							write(socket_table[i].sock_fd,ch,sizeof(ch));
 						}
-						sem_post(&sem1);
+						sem_post(&socket_table[i].sem);
 				} 
 			
  	}
@@ -95,13 +117,16 @@ void* handleThread(void* sock_fd){
 int table_check(unsigned long int ip, unsigned short int port,int client_sockfd){
 		int i=0;
 		for(i=0;i<=cur_pos;i++){
+			sem_wait(&socket_table[i].sem);
 			if(client_sockfd==socket_table[i].sock_fd){
 				if(ip == socket_table[i].c_ip){
 					if(port == socket_table[i].c_port){
+						sem_post(&socket_table[i].sem);
 						return 1;
 					}
 				}
 			}
+		   sem_post(&socket_table[i].sem);
 		}
 		return 0;
 }
